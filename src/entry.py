@@ -201,70 +201,75 @@ async def on_fetch(request, env):
     if request.method != "POST":
         return Response.new("Tigo Telegram Bot API is Running!")
 
-    bot_token = env.BOT_TOKEN
-    
+    # 1. 检查 BOT_TOKEN 是否读取成功
+    try:
+        bot_token = env.BOT_TOKEN
+    except Exception as e:
+        print(f"环境变量错误: {str(e)}")
+        return Response.new("BOT_TOKEN Not Configured", status=200) # 返回 200 防止 Telegram 报 500
+
     try:
         req_body = await request.text()
         update = json.loads(req_body)
-    except Exception:
-        return Response.new("Invalid JSON", status=400)
+    except Exception as e:
+        print(f"JSON 解析失败: {str(e)}")
+        return Response.new("OK", status=200)
 
     message = update.get("message", {})
     text = message.get("text", "").strip()
     chat_id = message.get("chat", {}).get("id")
 
     if not chat_id or not text:
-        return Response.new("OK")
+        return Response.new("OK", status=200)
 
-    # 指令解析
-    if text.startswith("/start"):
-        welcome_message = (
-            "🤖 <b>欢迎使用 Tigo SIM 自动化激活测试 Bot (Cloudflare 无服务器版)</b>\n\n"
-            "<b>📌 支持指令：</b>\n"
-            "• <code>/iccid [卡号]</code> - 自动激活指定 ICCID\n"
-            "• <code>/esim</code> - 获取默认 eSIM 激活码与二维码\n\n"
-            "-----------------------------------\n"
-            f"{DISCLAIMER_TEXT}"
-        )
-        await send_telegram_request(bot_token, "sendMessage", {
-            "chat_id": chat_id,
-            "text": welcome_message,
-            "parse_mode": "HTML"
-        })
-
-    elif text.startswith("/esim"):
-        caption_text = (
-            "📲 <b>eSIM 激活信息</b>\n\n"
-            f"<b>LPA 激活码:</b>\n<code>{LPA_CODE}</code>\n\n"
-            "💡 <i>可直接点击上述代码进行复制，或扫码添加。</i>"
-        )
-        await send_telegram_request(bot_token, "sendPhoto", {
-            "chat_id": chat_id,
-            "photo": QR_CODE_URL,
-            "caption": caption_text,
-            "parse_mode": "HTML"
-        })
-
-    elif text.startswith("/iccid"):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
+    # 捕获业务逻辑内部的错误，避免给 Telegram 抛出 500
+    try:
+        if text.startswith("/start"):
+            welcome_message = (
+                "🤖 <b>欢迎使用 Tigo SIM 自动化激活测试 Bot</b>\n\n"
+                "<b>📌 支持指令：</b>\n"
+                "• <code>/iccid [卡号]</code> - 自动激活指定 ICCID\n"
+                "• <code>/esim</code> - 获取默认 eSIM 激活码与二维码\n\n"
+                "-----------------------------------\n"
+                f"{DISCLAIMER_TEXT}"
+            )
             await send_telegram_request(bot_token, "sendMessage", {
                 "chat_id": chat_id,
-                "text": "❌ <b>参数缺失！</b>\n正确格式：<code>/iccid 你的ICCID号码</code>",
+                "text": welcome_message,
                 "parse_mode": "HTML"
             })
-            return Response.new("OK")
 
-        iccid = parts[1].strip()
+        elif text.startswith("/esim"):
+            caption_text = (
+                "📲 <b>eSIM 激活信息</b>\n\n"
+                f"<b>LPA 激活码:</b>\n<code>{LPA_CODE}</code>\n\n"
+                "💡 <i>可直接点击上述代码进行复制，或扫码添加。</i>"
+            )
+            await send_telegram_request(bot_token, "sendPhoto", {
+                "chat_id": chat_id,
+                "photo": QR_CODE_URL,
+                "caption": caption_text,
+                "parse_mode": "HTML"
+            })
 
-        # 发送提示
-        await send_telegram_request(bot_token, "sendMessage", {
-            "chat_id": chat_id,
-            "text": f"⏳ 正在提交激活申请...\n<b>ICCID:</b> <code>{iccid}</code>",
-            "parse_mode": "HTML"
-        })
+        elif text.startswith("/iccid"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await send_telegram_request(bot_token, "sendMessage", {
+                    "chat_id": chat_id,
+                    "text": "❌ <b>参数缺失！</b>\n正确格式：<code>/iccid 你的ICCID号码</code>",
+                    "parse_mode": "HTML"
+                })
+                return Response.new("OK", status=200)
 
-        try:
+            iccid = parts[1].strip()
+
+            await send_telegram_request(bot_token, "sendMessage", {
+                "chat_id": chat_id,
+                "text": f"⏳ 正在提交激活申请...\n<b>ICCID:</b> <code>{iccid}</code>",
+                "parse_mode": "HTML"
+            })
+
             res = await process_activation(iccid)
             success_text = (
                 "🎉 <b>SIM 卡激活成功！</b>\n\n"
@@ -279,11 +284,14 @@ async def on_fetch(request, env):
                 "text": success_text,
                 "parse_mode": "HTML"
             })
-        except Exception as e:
-            await send_telegram_request(bot_token, "sendMessage", {
-                "chat_id": chat_id,
-                "text": f"💥 <b>激活失败！</b>\n\n<b>ICCID:</b> <code>{iccid}</code>\n<b>原因:</b> <code>{str(e)}</code>",
-                "parse_mode": "HTML"
-            })
 
-    return Response.new("OK")
+    except Exception as err:
+        # 如果内部处理出错，向 Telegram 返回 200 OK 并把错误原因发给用户/打印日志
+        print(f"处理指令出错: {str(err)}")
+        await send_telegram_request(bot_token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": f"💥 <b>系统运行错误：</b>\n<code>{str(err)}</code>",
+            "parse_mode": "HTML"
+        })
+
+    return Response.new("OK", status=200)
